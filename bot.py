@@ -46,6 +46,10 @@ CALENDAR:{"title":"название","date":"2026-04-07T18:00:00","description":
 Например встреча 10 апреля в 15:00 = 2026-04-10T15:00:00+05:00
 Сегодня 2026-04-05.
 
+ПОЧТА:
+Когда просят отправить письмо — в конце ответа добавь:
+EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма"}
+
 Отвечай по-русски, тепло и профессионально."""
 
     if skills.get("extra"):
@@ -62,6 +66,17 @@ async def create_calendar_event(data):
             logging.info(f"Make response: {r.status_code} {r.text}")
     except Exception as e:
         logging.error(f"Calendar error: {e}")
+
+async def send_email(data):
+    if not MAKE_GMAIL_WEBHOOK:
+        logging.warning("MAKE_GMAIL_WEBHOOK not set!")
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(MAKE_GMAIL_WEBHOOK, json=data, timeout=15)
+            logging.info(f"Gmail response: {r.status_code} {r.text}")
+    except Exception as e:
+        logging.error(f"Gmail error: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -122,6 +137,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Parse error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
+if "EMAIL:" in reply:
+            parts = reply.split("EMAIL:")
+            clean_reply = parts[0].strip()
+            try:
+                email_data = json.loads(parts[1].strip())
+                await send_email(email_data)
+                clean_reply += "\n\n✅ Письмо отправлено!"
+            except Exception as e:
+                logging.error(f"Email parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
         else:
             await update.message.reply_text(reply)
     except Exception as e:
