@@ -1,23 +1,18 @@
-import os
-import logging
-import json
+import os, logging, json
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, MessageHandler,
-    CommandHandler, filters, ContextTypes
-)
-import anthropic
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
+import anthropic, httpx
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY").strip())
-
 user_histories = {}
 SKILLS_FILE = "skills.json"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 MAKE_WEBHOOK = os.getenv("MAKE_WEBHOOK", "")
+
 def load_skills():
     if not os.path.exists(SKILLS_FILE):
         return {"extra": ""}
@@ -31,9 +26,6 @@ def save_skills(skills):
 def get_system_prompt():
     skills = load_skills()
     base = """Ты — Амелия, личный ИИ-ассистент владелицы турагентства премиум класса.
-Ты умеешь абсолютно всё:
-Когда пользователь просит создать встречу или событие в календаре — отвечай в формате:
-CALENDAR: {"title": "название", "date": "дата и время", "description": "описание"}
 
 ТУРИЗМ:
 - Подбор туров (Турция, Мальдивы, Азия, Стамбул, Бодрум, Анталия)
@@ -42,31 +34,37 @@ CALENDAR: {"title": "название", "date": "дата и время", "descr
 - Переговоры с ДМС и операторами
 
 БИЗНЕС:
-- Составление писем и emails на русском, английском, турецком
+- Составление писем на русском, английском, турецком
 - Анализ данных и таблиц
 - Планирование задач и встреч
-- Протоколы звонков и встреч
 
-ОБЩЕЕ:
-- Помощь с любыми вопросами
-- Поиск информации
-- Советы и рекомендации
+КАЛЕНДАРЬ:
+Когда просят создать встречу — в конце ответа добавь:
+CALENDAR:{"title":"название","date":"06.04.2026 18:00","description":"описание"}
+Формат даты всегда: ДД.ММ.ГГГГ ЧЧ:ММ
+Сегодня 05.04.2026.
 
-Отвечай по-русски, тепло и профессионально.
-Ты — умный, преданный помощник который знает всё о бизнесе хозяйки."""
+Отвечай по-русски, тепло и профессионально."""
 
     if skills.get("extra"):
         base += f"\n\nДОПОЛНИТЕЛЬНЫЕ УМЕЛКИ:\n{skills['extra']}"
     return base
 
+async def create_calendar_event(data):
+    if not MAKE_WEBHOOK:
+        logging.warning("MAKE_WEBHOOK not set!")
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(MAKE_WEBHOOK, json=data, timeout=15)
+            logging.info(f"Make response: {r.status_code} {r.text}")
+    except Exception as e:
+        logging.error(f"Calendar error: {e}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_histories[user_id] = []
-    await update.message.reply_text(
-        "Привет! Я Амелия, ваш личный ассистент ✨\n\n"
-        "Помогу с турами, письмами, таблицами, планированием — всем!\n\n"
-        "Чем могу помочь?"
-    )
+    await update.message.reply_text("Привет! Я Амелия ✨\nЧем могу помочь?")
 
 async def add_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -74,46 +72,34 @@ async def add_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Только владелец может добавлять умелки.")
         return
     if not context.args:
-        await update.message.reply_text(
-            "Использование: /addskill описание умелки\n\n"
-            "Например: /addskill Знаешь цены отеля Rixos наизусть"
-        )
+        await update.message.reply_text("Использование: /addskill описание")
         return
     skill_text = " ".join(context.args)
     skills = load_skills()
-    if skills.get("extra"):
-        skills["extra"] += f"\n- {skill_text}"
-    else:
-        skills["extra"] = f"- {skill_text}"
+    skills["extra"] = skills.get("extra", "") + f"\n- {skill_text}"
     save_skills(skills)
-    await update.message.reply_text(f"✅ Умелка добавлена:\n{skill_text}")
+    await update.message.reply_text(f"✅ Умелка добавлена: {skill_text}")
 
 async def list_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     skills = load_skills()
     if not skills.get("extra"):
-        await update.message.reply_text("Пока нет дополнительных умелок.")
+        await update.message.reply_text("Пока нет умелок.")
         return
-    await update.message.reply_text(f"📋 Мои умелки:\n{skills['extra']}")
+    await update.message.reply_text(f"📋 Умелки:\n{skills['extra']}")
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_histories[user_id] = []
+    user_histories[update.effective_user.id] = []
     await update.message.reply_text("Начинаем сначала! ✨")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
-
     if user_id not in user_histories:
         user_histories[user_id] = []
-
     user_histories[user_id].append({"role": "user", "content": user_text})
-
     if len(user_histories[user_id]) > 20:
         user_histories[user_id] = user_histories[user_id][-20:]
-
     await update.message.reply_text("⏳")
-
     try:
         response = claude.messages.create(
             model="claude-sonnet-4-20250514",
@@ -123,8 +109,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply = response.content[0].text
         user_histories[user_id].append({"role": "assistant", "content": reply})
-        await update.message.reply_text(reply)
-
+        if "CALENDAR:" in reply:
+            parts = reply.split("CALENDAR:")
+            clean_reply = parts[0].strip()
+            try:
+                cal_data = json.loads(parts[1].strip())
+                await create_calendar_event(cal_data)
+                clean_reply += "\n\n✅ Событие добавлено в календарь!"
+            except Exception as e:
+                logging.error(f"Parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+        else:
+            await update.message.reply_text(reply)
     except Exception as e:
         logging.error(f"Ошибка: {e}")
         await update.message.reply_text("Что-то пошло не так 🙏")
