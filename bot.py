@@ -75,11 +75,10 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_histories[user_id] = []
     await update.message.reply_text("Начинаем сначала! Чем могу помочь? ✈️")
 
-app = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
+app = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN").strip()).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("reset", reset))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
 print("✅ Бот запущен!")
 app.run_polling()
 
