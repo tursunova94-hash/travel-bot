@@ -12,6 +12,7 @@ user_histories = {}
 SKILLS_FILE = "skills.json"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 MAKE_WEBHOOK = os.getenv("MAKE_WEBHOOK", "")
+MAKE_GMAIL_WEBHOOK = os.getenv("MAKE_GMAIL_WEBHOOK", "")
 
 def load_skills():
     if not os.path.exists(SKILLS_FILE):
