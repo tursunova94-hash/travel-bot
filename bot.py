@@ -17,7 +17,7 @@ claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY").strip())
 user_histories = {}
 SKILLS_FILE = "skills.json"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-
+MAKE_WEBHOOK = os.getenv("MAKE_WEBHOOK", "")
 def load_skills():
     if not os.path.exists(SKILLS_FILE):
         return {"extra": ""}
@@ -32,6 +32,8 @@ def get_system_prompt():
     skills = load_skills()
     base = """Ты — Амелия, личный ИИ-ассистент владелицы турагентства премиум класса.
 Ты умеешь абсолютно всё:
+Когда пользователь просит создать встречу или событие в календаре — отвечай в формате:
+CALENDAR: {"title": "название", "date": "дата и время", "description": "описание"}
 
 ТУРИЗМ:
 - Подбор туров (Турция, Мальдивы, Азия, Стамбул, Бодрум, Анталия)
