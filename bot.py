@@ -126,7 +126,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply = response.content[0].text
         user_histories[user_id].append({"role": "assistant", "content": reply})
-        if "CALENDAR:" in reply:
+       if "CALENDAR:" in reply:
             parts = reply.split("CALENDAR:")
             clean_reply = parts[0].strip()
             try:
@@ -137,12 +137,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Parse error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
-if "EMAIL:" in reply:
+        elif "EMAIL:" in reply:
             parts = reply.split("EMAIL:")
             clean_reply = parts[0].strip()
             try:
                 email_data = json.loads(parts[1].strip())
                 await send_email(email_data)
+                clean_reply += "\n\n✅ Письмо отправлено!"
+            except Exception as e:
+                logging.error(f"Email parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+        else:
+            await update.message.reply_text(reply)
                 clean_reply += "\n\n✅ Письмо отправлено!"
             except Exception as e:
                 logging.error(f"Email parse error: {e}")
