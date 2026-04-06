@@ -54,6 +54,11 @@ EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст пи�
 Когда просят показать письма — в конце ответа добавь:
 READ_EMAIL:{"max_results":5,"query":"поисковый запрос если нужен"}
 
+ОТВЕТ НА ПИСЬМО:
+Когда нужно ответить на письмо — сначала прочитай письма,
+найди ID нужного письма и добавь в конце:
+REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
+
 Отвечай по-русски, тепло и профессионально."""
     if skills.get("extra"):
         base += f"\n\nДОПОЛНИТЕЛЬНЫЕ УМЕЛКИ:\n{skills['extra']}"
@@ -114,10 +119,41 @@ def read_emails(max_results=5, query=""):
         for msg in messages[:max_results]:
             m = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
             headers = {h["name"]: h["value"] for h in m["payload"]["headers"]}
-            emails.append(f"От: {headers.get('From', '')}\nТема: {headers.get('Subject', '')}\n{m.get('snippet', '')[:200]}")
+            emails.append(f"ID: {msg['id']}\nОт: {headers.get('From', '')}\nТема: {headers.get('Subject', '')}\n{m.get('snippet', '')[:200]}")
         return "\n\n---\n\n".join(emails)
     except Exception as e:
         logging.error(f"Read email error: {e}")
+        return f"Ошибка: {e}"
+
+def reply_to_email(message_id: str, body: str):
+    service = get_gmail_service()
+    if not service:
+        return "Gmail не подключён"
+    try:
+        import base64
+        from email.mime.text import MIMEText
+        original = service.users().messages().get(
+            userId="me", id=message_id, format="full"
+        ).execute()
+        headers = {h["name"]: h["value"] for h in original["payload"]["headers"]}
+        to = headers.get("From", "")
+        subject = headers.get("Subject", "")
+        if not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        thread_id = original["threadId"]
+        msg = MIMEText(body)
+        msg["to"] = to
+        msg["subject"] = subject
+        msg["In-Reply-To"] = headers.get("Message-ID", "")
+        msg["References"] = headers.get("Message-ID", "")
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service.users().messages().send(
+            userId="me",
+            body={"raw": raw, "threadId": thread_id}
+        ).execute()
+        return f"Ответ отправлен на {to}"
+    except Exception as e:
+        logging.error(f"Reply email error: {e}")
         return f"Ошибка: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -177,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply += block.text
 
         if not reply:
-            reply = "Поиск выполнен, но ответ пустой. Попробуй ещё раз."
+            reply = "Готово! Если нужно что-то ещё — спрашивай."
 
         user_histories[user_id].append({"role": "assistant", "content": reply})
 
@@ -204,6 +240,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply += f"\n\n📧 Письма:\n\n{emails}"
             except Exception as e:
                 logging.error(f"Read email parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "REPLY_EMAIL:" in reply:
+            parts = reply.split("REPLY_EMAIL:")
+            clean_reply = parts[0].strip()
+            try:
+                params = json.loads(parts[1].strip())
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: reply_to_email(
+                        params.get("message_id", ""),
+                        params.get("body", "")
+                    )
+                )
+                clean_reply += f"\n\n✅ {result}"
+            except Exception as e:
+                logging.error(f"Reply email parse error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
