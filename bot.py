@@ -33,20 +33,6 @@ def parse_json_from_reply(text):
         pass
     return {}
 
-def extract_all_blocks(reply, tag):
-    pattern = rf'{tag}:(\{{[^}}]*\}})'
-    matches = re.findall(pattern, reply, re.DOTALL)
-    result = []
-    for m in matches:
-        try:
-            result.append(json.loads(m))
-        except:
-            try:
-                result.append(parse_json_from_reply(m))
-            except:
-                pass
-    return result
-
 def get_system_prompt():
     skills = load_skills()
     base = """Ты — Амелия, личный ИИ-ассистент владелицы турагентства премиум класса.
@@ -70,7 +56,6 @@ def get_system_prompt():
 CALENDAR:{"title":"название","date":"2026-04-10T15:00:00+05:00","description":"описание"}
 
 ПОЧТА ОТПРАВКА (можно несколько):
-Когда просят отправить письма — добавь для каждого:
 EMAIL:{"to":"адрес1@gmail.com","subject":"тема1","body":"текст1"}
 EMAIL:{"to":"адрес2@gmail.com","subject":"тема2","body":"текст2"}
 
@@ -83,8 +68,9 @@ REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
 GOOGLE SHEETS — СОЗДАТЬ:
 CREATE_SHEET:{"title":"название","headers":["Колонка1","Колонка2"]}
 
-GOOGLE SHEETS — ДОБАВИТЬ СТРОКУ:
+GOOGLE SHEETS — ДОБАВИТЬ СТРОКИ (можно несколько):
 ADD_ROW:{"sheet_url":"ссылка","row":["значение1","значение2"]}
+ADD_ROW:{"sheet_url":"ссылка","row":["значение3","значение4"]}
 
 GOOGLE SHEETS — ЧИТАТЬ:
 READ_SHEET:{"sheet_url":"ссылка","limit":10}
@@ -251,7 +237,7 @@ def add_row_to_sheet(sheet_url: str, row: list):
         sh = gc.open_by_url(sheet_url)
         ws = sh.get_worksheet(0)
         ws.append_row(row)
-        return "Строка добавлена!"
+        return "OK"
     except Exception as e:
         logging.error(f"Add row error: {e}")
         return f"Ошибка: {e}"
@@ -282,7 +268,7 @@ def update_cell(sheet_url: str, row: int, col: int, value: str):
         sh = gc.open_by_url(sheet_url)
         ws = sh.get_worksheet(0)
         ws.update_cell(row, col, value)
-        return f"Ячейка ({row},{col}) обновлена!"
+        return f"Ячейка обновлена!"
     except Exception as e:
         logging.error(f"Update cell error: {e}")
         return f"Ошибка: {e}"
@@ -380,19 +366,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_histories[user_id].append({"role": "assistant", "content": reply})
 
-        # Определяем какие команды есть в ответе
-        has_calendar = "CALENDAR:" in reply
-        has_email = "EMAIL:" in reply
-        has_read_email = "READ_EMAIL:" in reply
-        has_reply_email = "REPLY_EMAIL:" in reply
-        has_create_sheet = "CREATE_SHEET:" in reply
-        has_add_row = "ADD_ROW:" in reply
-        has_read_sheet = "READ_SHEET:" in reply
-        has_update_cell = "UPDATE_CELL:" in reply
-        has_update_row = "UPDATE_ROW:" in reply
-        has_format_sheet = "FORMAT_SHEET:" in reply
-
-        if has_calendar:
+        if "CALENDAR:" in reply:
             parts = reply.split("CALENDAR:")
             clean_reply = parts[0].strip()
             try:
@@ -404,7 +378,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif has_read_email:
+        elif "READ_EMAIL:" in reply:
             parts = reply.split("READ_EMAIL:")
             clean_reply = parts[0].strip()
             try:
@@ -418,7 +392,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif has_reply_email:
+        elif "REPLY_EMAIL:" in reply:
             parts = reply.split("REPLY_EMAIL:")
             clean_reply = parts[0].strip()
             try:
@@ -432,8 +406,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif has_email:
-            # Поддержка нескольких писем
+        elif "EMAIL:" in reply:
             email_blocks = re.findall(r'EMAIL:\{[^}]*\}', reply, re.DOTALL)
             clean_reply = re.sub(r'EMAIL:\{[^}]*\}', '', reply, flags=re.DOTALL).strip()
             sent = 0
@@ -449,7 +422,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply += f"\n\n✅ Отправлено писем: {sent}"
             await update.message.reply_text(clean_reply)
 
-        elif has_create_sheet:
+        elif "CREATE_SHEET:" in reply:
             parts = reply.split("CREATE_SHEET:")
             clean_reply = parts[0].strip()
             try:
@@ -463,21 +436,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif has_add_row:
-            parts = reply.split("ADD_ROW:")
-            clean_reply = parts[0].strip()
-            try:
-                params = parse_json_from_reply(parts[1])
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: add_row_to_sheet(params.get("sheet_url", ""), params.get("row", []))
-                )
-                clean_reply += f"\n\n✅ {result}"
-            except Exception as e:
-                logging.error(f"Add row error: {e}")
-                clean_reply = reply
+        elif "ADD_ROW:" in reply:
+            row_blocks = re.findall(r'ADD_ROW:\{[^}]*\}', reply, re.DOTALL)
+            clean_reply = re.sub(r'ADD_ROW:\{[^}]*\}', '', reply, flags=re.DOTALL).strip()
+            added = 0
+            for block in row_blocks:
+                try:
+                    params = parse_json_from_reply(block.replace("ADD_ROW:", ""))
+                    if params.get("sheet_url") and params.get("row"):
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, lambda p=params: add_row_to_sheet(p["sheet_url"], p["row"])
+                        )
+                        added += 1
+                except Exception as e:
+                    logging.error(f"Add row error: {e}")
+            clean_reply += f"\n\n✅ Добавлено строк: {added}"
             await update.message.reply_text(clean_reply)
 
-        elif has_read_sheet:
+        elif "READ_SHEET:" in reply:
             parts = reply.split("READ_SHEET:")
             clean_reply = parts[0].strip()
             try:
@@ -491,7 +467,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif has_update_cell:
+        elif "UPDATE_CELL:" in reply:
             parts = reply.split("UPDATE_CELL:")
             clean_reply = parts[0].strip()
             try:
@@ -510,7 +486,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif has_update_row:
+        elif "UPDATE_ROW:" in reply:
             parts = reply.split("UPDATE_ROW:")
             clean_reply = parts[0].strip()
             try:
@@ -529,7 +505,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif has_format_sheet:
+        elif "FORMAT_SHEET:" in reply:
             parts = reply.split("FORMAT_SHEET:")
             clean_reply = parts[0].strip()
             try:
