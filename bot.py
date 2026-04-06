@@ -68,16 +68,24 @@ READ_EMAIL:{"max_results":5,"query":"поисковый запрос если н
 REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
 
 GOOGLE SHEETS — СОЗДАТЬ:
-Когда просят создать таблицу — в конце ответа добавь:
-CREATE_SHEET:{"title":"название таблицы","headers":["Колонка1","Колонка2","Колонка3"]}
+CREATE_SHEET:{"title":"название","headers":["Колонка1","Колонка2"]}
 
 GOOGLE SHEETS — ДОБАВИТЬ СТРОКУ:
-Когда просят добавить данные в таблицу — в конце ответа добавь:
-ADD_ROW:{"sheet_url":"ссылка на таблицу","row":["значение1","значение2","значение3"]}
+ADD_ROW:{"sheet_url":"ссылка","row":["значение1","значение2"]}
 
 GOOGLE SHEETS — ЧИТАТЬ:
-Когда просят показать данные из таблицы — в конце ответа добавь:
-READ_SHEET:{"sheet_url":"ссылка на таблицу","limit":10}
+READ_SHEET:{"sheet_url":"ссылка","limit":10}
+
+GOOGLE SHEETS — ОБНОВИТЬ ЯЧЕЙКУ:
+UPDATE_CELL:{"sheet_url":"ссылка","row":2,"col":3,"value":"новое значение"}
+(row и col — номера строки и колонки, начиная с 1. Строка 1 — заголовки.)
+
+GOOGLE SHEETS — НАЙТИ И ОБНОВИТЬ СТРОКУ:
+UPDATE_ROW:{"sheet_url":"ссылка","search_col":1,"search_value":"что ищем","updates":{"2":"новое значение колонки 2","5":"новое значение колонки 5"}}
+
+GOOGLE SHEETS — ФОРМАТИРОВАТЬ:
+FORMAT_SHEET:{"sheet_url":"ссылка"}
+(Делает заголовки жирными, замораживает первую строку, добавляет автофильтр)
 
 Отвечай по-русски, тепло и профессионально."""
     if skills.get("extra"):
@@ -124,7 +132,7 @@ async def create_calendar_event(data):
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(MAKE_WEBHOOK, json=data, timeout=15)
-            logging.info(f"Make response: {r.status_code} {r.text}")
+            logging.info(f"Make response: {r.status_code}")
     except Exception as e:
         logging.error(f"Calendar error: {e}")
 
@@ -147,18 +155,16 @@ async def send_email(data):
             msg.attach(MIMEText(html, 'html'))
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
             service.users().messages().send(userId="me", body={"raw": raw}).execute()
-            logging.info(f"Email sent via Gmail API to {to}")
+            logging.info(f"Email sent to {to}")
             return
         except Exception as e:
             logging.error(f"Direct Gmail error: {e}")
-    if not MAKE_GMAIL_WEBHOOK:
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(MAKE_GMAIL_WEBHOOK, json=data, timeout=15)
-            logging.info(f"Gmail Make response: {r.status_code}")
-    except Exception as e:
-        logging.error(f"Gmail Make error: {e}")
+    if MAKE_GMAIL_WEBHOOK:
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(MAKE_GMAIL_WEBHOOK, json=data, timeout=15)
+        except Exception as e:
+            logging.error(f"Gmail Make error: {e}")
 
 def read_emails(max_results=5, query=""):
     service = get_gmail_service()
@@ -253,6 +259,56 @@ def read_sheet(sheet_url: str, limit: int = 10):
         return "\n".join(result)
     except Exception as e:
         logging.error(f"Read sheet error: {e}")
+        return f"Ошибка: {e}"
+
+def update_cell(sheet_url: str, row: int, col: int, value: str):
+    gc = get_sheets_client()
+    if not gc:
+        return "Google Sheets не подключён"
+    try:
+        sh = gc.open_by_url(sheet_url)
+        ws = sh.get_worksheet(0)
+        ws.update_cell(row, col, value)
+        return f"Ячейка ({row},{col}) обновлена!"
+    except Exception as e:
+        logging.error(f"Update cell error: {e}")
+        return f"Ошибка: {e}"
+
+def update_row(sheet_url: str, search_col: int, search_value: str, updates: dict):
+    gc = get_sheets_client()
+    if not gc:
+        return "Google Sheets не подключён"
+    try:
+        sh = gc.open_by_url(sheet_url)
+        ws = sh.get_worksheet(0)
+        col_values = ws.col_values(search_col)
+        if search_value not in col_values:
+            return f"Строка с '{search_value}' не найдена"
+        row_num = col_values.index(search_value) + 1
+        for col_str, value in updates.items():
+            ws.update_cell(row_num, int(col_str), value)
+        return f"Строка '{search_value}' обновлена!"
+    except Exception as e:
+        logging.error(f"Update row error: {e}")
+        return f"Ошибка: {e}"
+
+def format_sheet(sheet_url: str):
+    gc = get_sheets_client()
+    if not gc:
+        return "Google Sheets не подключён"
+    try:
+        import gspread.utils as utils
+        sh = gc.open_by_url(sheet_url)
+        ws = sh.get_worksheet(0)
+        ws.freeze(rows=1)
+        ws.format("1:1", {
+            "textFormat": {"bold": True},
+            "backgroundColor": {"red": 0.2, "green": 0.6, "blue": 0.9}
+        })
+        ws.set_basic_filter()
+        return "Таблица отформатирована!"
+    except Exception as e:
+        logging.error(f"Format sheet error: {e}")
         return f"Ошибка: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -372,12 +428,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 url, msg = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: create_sheet(params.get("title", "Таблица"), params.get("headers", []))
                 )
-                if url:
-                    clean_reply += f"\n\n✅ {msg}\n📊 {url}"
-                else:
-                    clean_reply += f"\n\n❌ {msg}"
+                clean_reply += f"\n\n✅ {msg}\n📊 {url}" if url else f"\n\n❌ {msg}"
             except Exception as e:
-                logging.error(f"Create sheet parse error: {e}")
+                logging.error(f"Create sheet error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
@@ -391,7 +444,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 clean_reply += f"\n\n✅ {result}"
             except Exception as e:
-                logging.error(f"Add row parse error: {e}")
+                logging.error(f"Add row error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
@@ -405,7 +458,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 clean_reply += f"\n\n📊 Данные:\n\n{data}"
             except Exception as e:
-                logging.error(f"Read sheet parse error: {e}")
+                logging.error(f"Read sheet error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "UPDATE_CELL:" in reply:
+            parts = reply.split("UPDATE_CELL:")
+            clean_reply = parts[0].strip()
+            try:
+                params = parse_json_from_reply(parts[1])
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: update_cell(
+                        params.get("sheet_url", ""),
+                        params.get("row", 1),
+                        params.get("col", 1),
+                        params.get("value", "")
+                    )
+                )
+                clean_reply += f"\n\n✅ {result}"
+            except Exception as e:
+                logging.error(f"Update cell error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "UPDATE_ROW:" in reply:
+            parts = reply.split("UPDATE_ROW:")
+            clean_reply = parts[0].strip()
+            try:
+                params = parse_json_from_reply(parts[1])
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: update_row(
+                        params.get("sheet_url", ""),
+                        params.get("search_col", 1),
+                        params.get("search_value", ""),
+                        params.get("updates", {})
+                    )
+                )
+                clean_reply += f"\n\n✅ {result}"
+            except Exception as e:
+                logging.error(f"Update row error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "FORMAT_SHEET:" in reply:
+            parts = reply.split("FORMAT_SHEET:")
+            clean_reply = parts[0].strip()
+            try:
+                params = parse_json_from_reply(parts[1])
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: format_sheet(params.get("sheet_url", ""))
+                )
+                clean_reply += f"\n\n✅ {result}"
+            except Exception as e:
+                logging.error(f"Format sheet error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
