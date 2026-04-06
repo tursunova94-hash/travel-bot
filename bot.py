@@ -93,7 +93,8 @@ async def send_email(data):
         try:
             import base64
             from email.mime.text import MIMEText
-            msg = MIMEText(body)
+           html_body = body.replace('\n', '<br>')
+msg = MIMEText(f"<html><body>{html_body}</body></html>", 'html')
             msg["to"] = to
             msg["subject"] = subject
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
