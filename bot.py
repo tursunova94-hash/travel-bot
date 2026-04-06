@@ -182,7 +182,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Calendar parse error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
-        elif "EMAIL:" in reply:
+        elif "EMAIL:" in reply and "READ_EMAIL:" not in reply:
             parts = reply.split("EMAIL:")
             clean_reply = parts[0].strip()
             try:
