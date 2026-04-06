@@ -193,7 +193,6 @@ reply = ""
 for block in response.content:
     if hasattr(block, "text"):
         reply += block.text
-        reply = response.content[0].text
         user_histories[user_id].append({"role": "assistant", "content": reply})
 
         if "CALENDAR:" in reply:
