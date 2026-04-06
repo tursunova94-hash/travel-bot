@@ -183,11 +183,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳")
     try:
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1500,
-            system=get_system_prompt(),
-            messages=user_histories[user_id]
-        )
+    model="claude-sonnet-4-20250514",
+    max_tokens=2000,
+    system=get_system_prompt(),
+    tools=[{"type": "web_search_20250305", "name": "web_search"}],
+    messages=user_histories[user_id]
+)
+reply = ""
+for block in response.content:
+    if hasattr(block, "text"):
+        reply += block.text
         reply = response.content[0].text
         user_histories[user_id].append({"role": "assistant", "content": reply})
 
