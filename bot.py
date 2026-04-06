@@ -1,4 +1,4 @@
-import os, logging, json, asyncio
+import os, logging, json, asyncio, re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
@@ -13,7 +13,6 @@ SKILLS_FILE = "skills.json"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 MAKE_WEBHOOK = os.getenv("MAKE_WEBHOOK", "")
 MAKE_GMAIL_WEBHOOK = os.getenv("MAKE_GMAIL_WEBHOOK", "")
-GMAIL_TOKEN_B64 = os.getenv("GMAIL_TOKEN", "")
 
 def load_skills():
     if not os.path.exists(SKILLS_FILE):
@@ -25,47 +24,14 @@ def save_skills(skills):
     with open(SKILLS_FILE, "w") as f:
         json.dump(skills, f, ensure_ascii=False, indent=2)
 
-def get_gmail_service():
-    import pickle
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-    
-    token_path = os.path.join(os.path.dirname(__file__), 'token.pickle')
-    if not os.path.exists(token_path):
-        logging.error("token.pickle not found!")
-        return None
+def parse_json_from_reply(text):
     try:
-        with open(token_path, 'rb') as f:
-            creds = pickle.load(f)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        return build('gmail', 'v1', credentials=creds)
-    except Exception as e:
-        logging.error(f"Gmail service error: {e}")
-        return None
-
-def read_emails_sync(max_results=5, query=""):
-    service = get_gmail_service()
-    if not service:
-        return "Gmail не подключён"
-    try:
-        params = {"userId": "me", "maxResults": max_results, "labelIds": ["INBOX"]}
-        if query:
-            params["q"] = query
-        results = service.users().messages().list(**params).execute()
-        messages = results.get("messages", [])
-        if not messages:
-            return "Входящих писем нет"
-        emails = []
-        for msg in messages[:max_results]:
-            m = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-            headers = {h["name"]: h["value"] for h in m["payload"]["headers"]}
-            emails.append(f"От: {headers.get('From', '')}\nТема: {headers.get('Subject', '')}\n{m.get('snippet', '')[:200]}")
-        return "\n\n---\n\n".join(emails)
-    except Exception as e:
-        logging.error(f"Read email error: {e}")
-        return f"Ошибка: {e}"
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+    except:
+        pass
+    return {}
 
 def get_system_prompt():
     skills = load_skills()
@@ -82,25 +48,46 @@ def get_system_prompt():
 - Анализ данных и таблиц
 - Планирование задач и встреч
 
+ПОИСК:
+Когда нужна актуальная информация — используй веб-поиск автоматически.
+
 КАЛЕНДАРЬ:
 Когда просят создать встречу — в конце ответа добавь:
 CALENDAR:{"title":"название","date":"2026-04-10T15:00:00+05:00","description":"описание"}
-Формат даты ВСЕГДА ISO с часовым поясом: ГГГГ-ММ-ДДTЧЧ:ММ:СС+05:00
-Сегодня 2026-04-05.
 
-ПОЧТА ИСХОДЯЩАЯ:
+ПОЧТА ОТПРАВКА:
 Когда просят отправить письмо — в конце ответа добавь:
-EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма"}
+EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма. Используй \\n для переносов строк между абзацами."}
 
-ПОЧТА ВХОДЯЩАЯ:
-Когда просят показать письма или найти письмо от кого-то — в конце ответа добавь:
-READ_EMAIL:{"max_results":5,"query":"поисковый запрос"}
-Например если ищут письма от Asialuxe: READ_EMAIL:{"max_results":5,"query":"from:asialuxe"}
+ПОЧТА ЧТЕНИЕ:
+Когда просят показать письма — в конце ответа добавь:
+READ_EMAIL:{"max_results":5,"query":"поисковый запрос если нужен"}
+
+ОТВЕТ НА ПИСЬМО:
+Когда нужно ответить на письмо — добавь в конце:
+REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
 
 Отвечай по-русски, тепло и профессионально."""
     if skills.get("extra"):
         base += f"\n\nДОПОЛНИТЕЛЬНЫЕ УМЕЛКИ:\n{skills['extra']}"
     return base
+
+def get_gmail_service():
+    import pickle
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    token_path = os.path.join(os.path.dirname(__file__), 'token.pickle')
+    if not os.path.exists(token_path):
+        return None
+    try:
+        with open(token_path, 'rb') as f:
+            creds = pickle.load(f)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        return build('gmail', 'v1', credentials=creds)
+    except Exception as e:
+        logging.error(f"Gmail service error: {e}")
+        return None
 
 async def create_calendar_event(data):
     if not MAKE_WEBHOOK:
@@ -108,28 +95,96 @@ async def create_calendar_event(data):
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(MAKE_WEBHOOK, json=data, timeout=15)
-            logging.info(f"Make response: {r.status_code}")
+            logging.info(f"Make response: {r.status_code} {r.text}")
     except Exception as e:
         logging.error(f"Calendar error: {e}")
 
 async def send_email(data):
+    to = data.get("to", "")
+    subject = data.get("subject", "")
+    body = data.get("body", "")
+    service = get_gmail_service()
+    if service:
+        try:
+            import base64
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            msg = MIMEMultipart('alternative')
+            msg["to"] = to
+            msg["subject"] = subject
+            html_body = body.replace('\\n', '<br>').replace('\n', '<br>')
+            html = f"<html><body><p>{html_body}</p></body></html>"
+            msg.attach(MIMEText(body, 'plain'))
+            msg.attach(MIMEText(html, 'html'))
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            service.users().messages().send(userId="me", body={"raw": raw}).execute()
+            logging.info(f"Email sent via Gmail API to {to}")
+            return
+        except Exception as e:
+            logging.error(f"Direct Gmail error: {e}")
     if not MAKE_GMAIL_WEBHOOK:
         return
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(MAKE_GMAIL_WEBHOOK, json=data, timeout=15)
-            logging.info(f"Gmail response: {r.status_code}")
+            logging.info(f"Gmail Make response: {r.status_code}")
     except Exception as e:
-        logging.error(f"Gmail error: {e}")
+        logging.error(f"Gmail Make error: {e}")
+
+def read_emails(max_results=5, query=""):
+    service = get_gmail_service()
+    if not service:
+        return "Gmail не подключён"
+    try:
+        params = {"userId": "me", "maxResults": max_results}
+        if query:
+            params["q"] = query
+        else:
+            params["labelIds"] = ["INBOX"]
+        results = service.users().messages().list(**params).execute()
+        messages = results.get("messages", [])
+        if not messages:
+            return "Писем нет"
+        emails = []
+        for msg in messages[:max_results]:
+            m = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
+            headers = {h["name"]: h["value"] for h in m["payload"]["headers"]}
+            emails.append(f"ID: {msg['id']}\nОт: {headers.get('From', '')}\nТема: {headers.get('Subject', '')}\n{m.get('snippet', '')[:200]}")
+        return "\n\n---\n\n".join(emails)
+    except Exception as e:
+        logging.error(f"Read email error: {e}")
+        return f"Ошибка: {e}"
+
+def reply_to_email(message_id: str, body: str):
+    service = get_gmail_service()
+    if not service:
+        return "Gmail не подключён"
+    try:
+        import base64
+        from email.mime.text import MIMEText
+        original = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+        headers = {h["name"]: h["value"] for h in original["payload"]["headers"]}
+        to = headers.get("From", "")
+        subject = headers.get("Subject", "")
+        if not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        thread_id = original["threadId"]
+        msg = MIMEText(body)
+        msg["to"] = to
+        msg["subject"] = subject
+        msg["In-Reply-To"] = headers.get("Message-ID", "")
+        msg["References"] = headers.get("Message-ID", "")
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service.users().messages().send(userId="me", body={"raw": raw, "threadId": thread_id}).execute()
+        return f"Ответ отправлен на {to}"
+    except Exception as e:
+        logging.error(f"Reply email error: {e}")
+        return f"Ошибка: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_histories[user_id] = []
-    await update.message.reply_text(
-        "Привет! Я Амелия, ваш личный ассистент ✨\n\n"
-        "Помогу с турами, письмами, календарём — всем!\n\n"
-        "Чем могу помочь?"
-    )
+    await update.message.reply_text("Привет! Я Амелия, ваш личный ассистент ✨\n\nПомогу с турами, письмами, календарём, поиском — всем!\n\nЧем могу помочь?")
 
 async def add_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -168,53 +223,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = claude.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1500,
+            max_tokens=2000,
             system=get_system_prompt(),
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=user_histories[user_id]
         )
-        reply = response.content[0].text
+        reply = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                reply += block.text
+
+        if not reply:
+            reply = "Готово! Если нужно что-то ещё — спрашивай."
+
         user_histories[user_id].append({"role": "assistant", "content": reply})
 
         if "CALENDAR:" in reply:
             parts = reply.split("CALENDAR:")
             clean_reply = parts[0].strip()
             try:
-                cal_data = json.loads(parts[1].strip())
+                cal_data = parse_json_from_reply(parts[1])
                 await create_calendar_event(cal_data)
                 clean_reply += "\n\n✅ Событие добавлено в календарь!"
             except Exception as e:
                 logging.error(f"Calendar parse error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
-        elif "EMAIL:" in reply and "READ_EMAIL:" not in reply:
-            parts = reply.split("EMAIL:")
-            clean_reply = parts[0].strip()
-            try:
-                email_data = json.loads(parts[1].strip())
-                await send_email(email_data)
-                clean_reply += "\n\n✅ Письмо отправлено!"
-            except Exception as e:
-                logging.error(f"Email parse error: {e}")
-                clean_reply = reply
-            await update.message.reply_text(clean_reply)
+
         elif "READ_EMAIL:" in reply:
             parts = reply.split("READ_EMAIL:")
             clean_reply = parts[0].strip()
             try:
-                params = json.loads(parts[1].strip())
-                loop = asyncio.get_event_loop()
-                emails = await loop.run_in_executor(
-                    None,
-                    lambda: read_emails_sync(
-                        params.get("max_results", 5),
-                        params.get("query", "")
-                    )
+                params = parse_json_from_reply(parts[1])
+                emails = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: read_emails(params.get("max_results", 5), params.get("query", ""))
                 )
                 clean_reply += f"\n\n📧 Письма:\n\n{emails}"
             except Exception as e:
                 logging.error(f"Read email parse error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
+
+        elif "REPLY_EMAIL:" in reply:
+            parts = reply.split("REPLY_EMAIL:")
+            clean_reply = parts[0].strip()
+            try:
+                params = parse_json_from_reply(parts[1])
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: reply_to_email(params.get("message_id", ""), params.get("body", ""))
+                )
+                clean_reply += f"\n\n✅ {result}"
+            except Exception as e:
+                logging.error(f"Reply email parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "EMAIL:" in reply:
+            parts = reply.split("EMAIL:")
+            clean_reply = parts[0].strip()
+            try:
+                email_data = parse_json_from_reply(parts[1])
+                await send_email(email_data)
+                clean_reply += "\n\n✅ Письмо отправлено!"
+            except Exception as e:
+                logging.error(f"Email parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
         else:
             await update.message.reply_text(reply)
 
