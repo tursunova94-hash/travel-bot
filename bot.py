@@ -26,14 +26,18 @@ def save_skills(skills):
         json.dump(skills, f, ensure_ascii=False, indent=2)
 
 def get_gmail_service():
-    import base64, pickle
+    import pickle
+    from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
-    if not GMAIL_TOKEN_B64:
+    
+    token_path = os.path.join(os.path.dirname(__file__), 'token.pickle')
+    if not os.path.exists(token_path):
+        logging.error("token.pickle not found!")
         return None
     try:
-        token_data = base64.b64decode(GMAIL_TOKEN_B64 + '==')
-        creds = pickle.loads(token_data)
+        with open(token_path, 'rb') as f:
+            creds = pickle.load(f)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
         return build('gmail', 'v1', credentials=creds)
