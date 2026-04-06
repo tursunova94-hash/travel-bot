@@ -83,6 +83,29 @@ async def create_calendar_event(data):
         logging.error(f"Calendar error: {e}")
 
 async def send_email(data):
+    to = data.get("to", "")
+    subject = data.get("subject", "")
+    body = data.get("body", "")
+    
+    # Пробуем через Gmail API напрямую
+    service = get_gmail_service()
+    if service:
+        try:
+            import base64
+            from email.mime.text import MIMEText
+            msg = MIMEText(body)
+            msg["to"] = to
+            msg["subject"] = subject
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            service.users().messages().send(
+                userId="me", body={"raw": raw}
+            ).execute()
+            logging.info(f"Email sent directly via Gmail API to {to}")
+            return
+        except Exception as e:
+            logging.error(f"Direct Gmail error: {e}")
+    
+    # Фолбэк через Make
     if not MAKE_GMAIL_WEBHOOK:
         return
     try:
@@ -91,7 +114,6 @@ async def send_email(data):
             logging.info(f"Gmail response: {r.status_code} {r.text}")
     except Exception as e:
         logging.error(f"Gmail error: {e}")
-
 def get_gmail_service():
     import pickle
     from google.auth.transport.requests import Request
