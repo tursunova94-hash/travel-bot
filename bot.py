@@ -67,6 +67,18 @@ READ_EMAIL:{"max_results":5,"query":"поисковый запрос если н
 Когда нужно ответить на письмо — добавь в конце:
 REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
 
+GOOGLE SHEETS — СОЗДАТЬ:
+Когда просят создать таблицу — в конце ответа добавь:
+CREATE_SHEET:{"title":"название таблицы","headers":["Колонка1","Колонка2","Колонка3"]}
+
+GOOGLE SHEETS — ДОБАВИТЬ СТРОКУ:
+Когда просят добавить данные в таблицу — в конце ответа добавь:
+ADD_ROW:{"sheet_url":"ссылка на таблицу","row":["значение1","значение2","значение3"]}
+
+GOOGLE SHEETS — ЧИТАТЬ:
+Когда просят показать данные из таблицы — в конце ответа добавь:
+READ_SHEET:{"sheet_url":"ссылка на таблицу","limit":10}
+
 Отвечай по-русски, тепло и профессионально."""
     if skills.get("extra"):
         base += f"\n\nДОПОЛНИТЕЛЬНЫЕ УМЕЛКИ:\n{skills['extra']}"
@@ -87,6 +99,23 @@ def get_gmail_service():
         return build('gmail', 'v1', credentials=creds)
     except Exception as e:
         logging.error(f"Gmail service error: {e}")
+        return None
+
+def get_sheets_client():
+    import pickle
+    import gspread
+    from google.auth.transport.requests import Request
+    token_path = os.path.join(os.path.dirname(__file__), 'token.pickle')
+    if not os.path.exists(token_path):
+        return None
+    try:
+        with open(token_path, 'rb') as f:
+            creds = pickle.load(f)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        return gspread.authorize(creds)
+    except Exception as e:
+        logging.error(f"Sheets client error: {e}")
         return None
 
 async def create_calendar_event(data):
@@ -181,10 +210,55 @@ def reply_to_email(message_id: str, body: str):
         logging.error(f"Reply email error: {e}")
         return f"Ошибка: {e}"
 
+def create_sheet(title: str, headers: list):
+    gc = get_sheets_client()
+    if not gc:
+        return None, "Google Sheets не подключён"
+    try:
+        sh = gc.create(title)
+        ws = sh.get_worksheet(0)
+        ws.append_row(headers)
+        sh.share(None, perm_type='anyone', role='writer')
+        return sh.url, f"Таблица '{title}' создана!"
+    except Exception as e:
+        logging.error(f"Create sheet error: {e}")
+        return None, f"Ошибка: {e}"
+
+def add_row_to_sheet(sheet_url: str, row: list):
+    gc = get_sheets_client()
+    if not gc:
+        return "Google Sheets не подключён"
+    try:
+        sh = gc.open_by_url(sheet_url)
+        ws = sh.get_worksheet(0)
+        ws.append_row(row)
+        return "Строка добавлена!"
+    except Exception as e:
+        logging.error(f"Add row error: {e}")
+        return f"Ошибка: {e}"
+
+def read_sheet(sheet_url: str, limit: int = 10):
+    gc = get_sheets_client()
+    if not gc:
+        return "Google Sheets не подключён"
+    try:
+        sh = gc.open_by_url(sheet_url)
+        ws = sh.get_worksheet(0)
+        data = ws.get_all_values()
+        if not data:
+            return "Таблица пустая"
+        result = []
+        for row in data[:limit]:
+            result.append(" | ".join(row))
+        return "\n".join(result)
+    except Exception as e:
+        logging.error(f"Read sheet error: {e}")
+        return f"Ошибка: {e}"
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_histories[user_id] = []
-    await update.message.reply_text("Привет! Я Амелия, ваш личный ассистент ✨\n\nПомогу с турами, письмами, календарём, поиском — всем!\n\nЧем могу помочь?")
+    await update.message.reply_text("Привет! Я Амелия, ваш личный ассистент ✨\n\nПомогу с турами, письмами, календарём, таблицами — всем!\n\nЧем могу помочь?")
 
 async def add_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -287,6 +361,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply += "\n\n✅ Письмо отправлено!"
             except Exception as e:
                 logging.error(f"Email parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "CREATE_SHEET:" in reply:
+            parts = reply.split("CREATE_SHEET:")
+            clean_reply = parts[0].strip()
+            try:
+                params = parse_json_from_reply(parts[1])
+                url, msg = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: create_sheet(params.get("title", "Таблица"), params.get("headers", []))
+                )
+                if url:
+                    clean_reply += f"\n\n✅ {msg}\n📊 {url}"
+                else:
+                    clean_reply += f"\n\n❌ {msg}"
+            except Exception as e:
+                logging.error(f"Create sheet parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "ADD_ROW:" in reply:
+            parts = reply.split("ADD_ROW:")
+            clean_reply = parts[0].strip()
+            try:
+                params = parse_json_from_reply(parts[1])
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: add_row_to_sheet(params.get("sheet_url", ""), params.get("row", []))
+                )
+                clean_reply += f"\n\n✅ {result}"
+            except Exception as e:
+                logging.error(f"Add row parse error: {e}")
+                clean_reply = reply
+            await update.message.reply_text(clean_reply)
+
+        elif "READ_SHEET:" in reply:
+            parts = reply.split("READ_SHEET:")
+            clean_reply = parts[0].strip()
+            try:
+                params = parse_json_from_reply(parts[1])
+                data = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: read_sheet(params.get("sheet_url", ""), params.get("limit", 10))
+                )
+                clean_reply += f"\n\n📊 Данные:\n\n{data}"
+            except Exception as e:
+                logging.error(f"Read sheet parse error: {e}")
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
