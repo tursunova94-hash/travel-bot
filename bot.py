@@ -1,4 +1,4 @@
-import os, logging, json, asyncio
+import os, logging, json, asyncio, re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
@@ -24,6 +24,15 @@ def save_skills(skills):
     with open(SKILLS_FILE, "w") as f:
         json.dump(skills, f, ensure_ascii=False, indent=2)
 
+def parse_json_from_reply(text):
+    try:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+    except:
+        pass
+    return {}
+
 def get_system_prompt():
     skills = load_skills()
     base = """Ты — Амелия, личный ИИ-ассистент владелицы турагентства премиум класса.
@@ -48,16 +57,15 @@ CALENDAR:{"title":"название","date":"2026-04-10T15:00:00+05:00","descrip
 
 ПОЧТА ОТПРАВКА:
 Когда просят отправить письмо — в конце ответа добавь:
-EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма"}
+EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма в одну строку без переносов"}
 
 ПОЧТА ЧТЕНИЕ:
 Когда просят показать письма — в конце ответа добавь:
 READ_EMAIL:{"max_results":5,"query":"поисковый запрос если нужен"}
 
 ОТВЕТ НА ПИСЬМО:
-Когда нужно ответить на письмо — сначала прочитай письма,
-найди ID нужного письма и добавь в конце:
-REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
+Когда нужно ответить на письмо — добавь в конце:
+REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа в одну строку"}
 
 Отвечай по-русски, тепло и профессионально."""
     if skills.get("extra"):
@@ -132,9 +140,7 @@ def reply_to_email(message_id: str, body: str):
     try:
         import base64
         from email.mime.text import MIMEText
-        original = service.users().messages().get(
-            userId="me", id=message_id, format="full"
-        ).execute()
+        original = service.users().messages().get(userId="me", id=message_id, format="full").execute()
         headers = {h["name"]: h["value"] for h in original["payload"]["headers"]}
         to = headers.get("From", "")
         subject = headers.get("Subject", "")
@@ -147,10 +153,7 @@ def reply_to_email(message_id: str, body: str):
         msg["In-Reply-To"] = headers.get("Message-ID", "")
         msg["References"] = headers.get("Message-ID", "")
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        service.users().messages().send(
-            userId="me",
-            body={"raw": raw, "threadId": thread_id}
-        ).execute()
+        service.users().messages().send(userId="me", body={"raw": raw, "threadId": thread_id}).execute()
         return f"Ответ отправлен на {to}"
     except Exception as e:
         logging.error(f"Reply email error: {e}")
@@ -159,11 +162,7 @@ def reply_to_email(message_id: str, body: str):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_histories[user_id] = []
-    await update.message.reply_text(
-        "Привет! Я Амелия, ваш личный ассистент ✨\n\n"
-        "Помогу с турами, письмами, календарём, поиском — всем!\n\n"
-        "Чем могу помочь?"
-    )
+    await update.message.reply_text("Привет! Я Амелия, ваш личный ассистент ✨\n\nПомогу с турами, письмами, календарём, поиском — всем!\n\nЧем могу помочь?")
 
 async def add_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -221,7 +220,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = reply.split("CALENDAR:")
             clean_reply = parts[0].strip()
             try:
-                cal_data = json.loads(parts[1].strip())
+                cal_data = parse_json_from_reply(parts[1])
                 await create_calendar_event(cal_data)
                 clean_reply += "\n\n✅ Событие добавлено в календарь!"
             except Exception as e:
@@ -233,7 +232,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = reply.split("READ_EMAIL:")
             clean_reply = parts[0].strip()
             try:
-                params = json.loads(parts[1].strip())
+                params = parse_json_from_reply(parts[1])
                 emails = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: read_emails(params.get("max_results", 5), params.get("query", ""))
                 )
@@ -247,12 +246,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = reply.split("REPLY_EMAIL:")
             clean_reply = parts[0].strip()
             try:
-                params = json.loads(parts[1].strip())
+                params = parse_json_from_reply(parts[1])
                 result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: reply_to_email(
-                        params.get("message_id", ""),
-                        params.get("body", "")
-                    )
+                    None, lambda: reply_to_email(params.get("message_id", ""), params.get("body", ""))
                 )
                 clean_reply += f"\n\n✅ {result}"
             except Exception as e:
@@ -264,7 +260,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = reply.split("EMAIL:")
             clean_reply = parts[0].strip()
             try:
-                email_data = json.loads(parts[1].strip())
+                email_data = parse_json_from_reply(parts[1])
                 await send_email(email_data)
                 clean_reply += "\n\n✅ Письмо отправлено!"
             except Exception as e:
