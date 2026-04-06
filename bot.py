@@ -408,17 +408,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "EMAIL:" in reply:
-            parts = reply.split("EMAIL:")
-            clean_reply = parts[0].strip()
-            try:
-                email_data = parse_json_from_reply(parts[1])
+       elif "EMAIL:" in reply:
+    import re as re2
+    email_blocks = re2.findall(r'EMAIL:\{.*?\}', reply, re2.DOTALL)
+    clean_reply = re.sub(r'EMAIL:\{.*?\}', '', reply, flags=re.DOTALL).strip()
+    sent = 0
+    for block in email_blocks:
+        try:
+            email_data = parse_json_from_reply(block.replace("EMAIL:", ""))
+            if email_data.get("to"):
                 await send_email(email_data)
-                clean_reply += "\n\n✅ Письмо отправлено!"
-            except Exception as e:
-                logging.error(f"Email parse error: {e}")
-                clean_reply = reply
-            await update.message.reply_text(clean_reply)
+                sent += 1
+        except Exception as e:
+            logging.error(f"Email parse error: {e}")
+    if sent > 0:
+        clean_reply += f"\n\n✅ Отправлено писем: {sent}"
+    await update.message.reply_text(clean_reply)
 
         elif "CREATE_SHEET:" in reply:
             parts = reply.split("CREATE_SHEET:")
