@@ -33,6 +33,20 @@ def parse_json_from_reply(text):
         pass
     return {}
 
+def extract_all_blocks(reply, tag):
+    pattern = rf'{tag}:(\{{[^}}]*\}})'
+    matches = re.findall(pattern, reply, re.DOTALL)
+    result = []
+    for m in matches:
+        try:
+            result.append(json.loads(m))
+        except:
+            try:
+                result.append(parse_json_from_reply(m))
+            except:
+                pass
+    return result
+
 def get_system_prompt():
     skills = load_skills()
     base = """Ты — Амелия, личный ИИ-ассистент владелицы турагентства премиум класса.
@@ -55,16 +69,15 @@ def get_system_prompt():
 Когда просят создать встречу — в конце ответа добавь:
 CALENDAR:{"title":"название","date":"2026-04-10T15:00:00+05:00","description":"описание"}
 
-ПОЧТА ОТПРАВКА:
-Когда просят отправить письмо — в конце ответа добавь:
-EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма. Используй \\n для переносов строк между абзацами."}
+ПОЧТА ОТПРАВКА (можно несколько):
+Когда просят отправить письма — добавь для каждого:
+EMAIL:{"to":"адрес1@gmail.com","subject":"тема1","body":"текст1"}
+EMAIL:{"to":"адрес2@gmail.com","subject":"тема2","body":"текст2"}
 
 ПОЧТА ЧТЕНИЕ:
-Когда просят показать письма — в конце ответа добавь:
 READ_EMAIL:{"max_results":5,"query":"поисковый запрос если нужен"}
 
 ОТВЕТ НА ПИСЬМО:
-Когда нужно ответить на письмо — добавь в конце:
 REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
 
 GOOGLE SHEETS — СОЗДАТЬ:
@@ -78,14 +91,12 @@ READ_SHEET:{"sheet_url":"ссылка","limit":10}
 
 GOOGLE SHEETS — ОБНОВИТЬ ЯЧЕЙКУ:
 UPDATE_CELL:{"sheet_url":"ссылка","row":2,"col":3,"value":"новое значение"}
-(row и col — номера строки и колонки, начиная с 1. Строка 1 — заголовки.)
 
 GOOGLE SHEETS — НАЙТИ И ОБНОВИТЬ СТРОКУ:
-UPDATE_ROW:{"sheet_url":"ссылка","search_col":1,"search_value":"что ищем","updates":{"2":"новое значение колонки 2","5":"новое значение колонки 5"}}
+UPDATE_ROW:{"sheet_url":"ссылка","search_col":1,"search_value":"что ищем","updates":{"2":"значение","5":"значение"}}
 
 GOOGLE SHEETS — ФОРМАТИРОВАТЬ:
 FORMAT_SHEET:{"sheet_url":"ссылка"}
-(Делает заголовки жирными, замораживает первую строку, добавляет автофильтр)
 
 Отвечай по-русски, тепло и профессионально."""
     if skills.get("extra"):
@@ -156,15 +167,17 @@ async def send_email(data):
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
             service.users().messages().send(userId="me", body={"raw": raw}).execute()
             logging.info(f"Email sent to {to}")
-            return
+            return True
         except Exception as e:
             logging.error(f"Direct Gmail error: {e}")
     if MAKE_GMAIL_WEBHOOK:
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(MAKE_GMAIL_WEBHOOK, json=data, timeout=15)
+            return True
         except Exception as e:
             logging.error(f"Gmail Make error: {e}")
+    return False
 
 def read_emails(max_results=5, query=""):
     service = get_gmail_service()
@@ -297,7 +310,6 @@ def format_sheet(sheet_url: str):
     if not gc:
         return "Google Sheets не подключён"
     try:
-        import gspread.utils as utils
         sh = gc.open_by_url(sheet_url)
         ws = sh.get_worksheet(0)
         ws.freeze(rows=1)
@@ -368,7 +380,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_histories[user_id].append({"role": "assistant", "content": reply})
 
-        if "CALENDAR:" in reply:
+        # Определяем какие команды есть в ответе
+        has_calendar = "CALENDAR:" in reply
+        has_email = "EMAIL:" in reply
+        has_read_email = "READ_EMAIL:" in reply
+        has_reply_email = "REPLY_EMAIL:" in reply
+        has_create_sheet = "CREATE_SHEET:" in reply
+        has_add_row = "ADD_ROW:" in reply
+        has_read_sheet = "READ_SHEET:" in reply
+        has_update_cell = "UPDATE_CELL:" in reply
+        has_update_row = "UPDATE_ROW:" in reply
+        has_format_sheet = "FORMAT_SHEET:" in reply
+
+        if has_calendar:
             parts = reply.split("CALENDAR:")
             clean_reply = parts[0].strip()
             try:
@@ -380,7 +404,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "READ_EMAIL:" in reply:
+        elif has_read_email:
             parts = reply.split("READ_EMAIL:")
             clean_reply = parts[0].strip()
             try:
@@ -394,7 +418,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "REPLY_EMAIL:" in reply:
+        elif has_reply_email:
             parts = reply.split("REPLY_EMAIL:")
             clean_reply = parts[0].strip()
             try:
@@ -408,24 +432,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-       elif "EMAIL:" in reply:
-    import re as re2
-    email_blocks = re2.findall(r'EMAIL:\{.*?\}', reply, re2.DOTALL)
-    clean_reply = re.sub(r'EMAIL:\{.*?\}', '', reply, flags=re.DOTALL).strip()
-    sent = 0
-    for block in email_blocks:
-        try:
-            email_data = parse_json_from_reply(block.replace("EMAIL:", ""))
-            if email_data.get("to"):
-                await send_email(email_data)
-                sent += 1
-        except Exception as e:
-            logging.error(f"Email parse error: {e}")
-    if sent > 0:
-        clean_reply += f"\n\n✅ Отправлено писем: {sent}"
-    await update.message.reply_text(clean_reply)
+        elif has_email:
+            # Поддержка нескольких писем
+            email_blocks = re.findall(r'EMAIL:\{[^}]*\}', reply, re.DOTALL)
+            clean_reply = re.sub(r'EMAIL:\{[^}]*\}', '', reply, flags=re.DOTALL).strip()
+            sent = 0
+            for block in email_blocks:
+                try:
+                    email_data = parse_json_from_reply(block.replace("EMAIL:", ""))
+                    if email_data.get("to"):
+                        await send_email(email_data)
+                        sent += 1
+                except Exception as e:
+                    logging.error(f"Email send error: {e}")
+            if sent > 0:
+                clean_reply += f"\n\n✅ Отправлено писем: {sent}"
+            await update.message.reply_text(clean_reply)
 
-        elif "CREATE_SHEET:" in reply:
+        elif has_create_sheet:
             parts = reply.split("CREATE_SHEET:")
             clean_reply = parts[0].strip()
             try:
@@ -439,7 +463,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "ADD_ROW:" in reply:
+        elif has_add_row:
             parts = reply.split("ADD_ROW:")
             clean_reply = parts[0].strip()
             try:
@@ -453,7 +477,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "READ_SHEET:" in reply:
+        elif has_read_sheet:
             parts = reply.split("READ_SHEET:")
             clean_reply = parts[0].strip()
             try:
@@ -467,7 +491,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "UPDATE_CELL:" in reply:
+        elif has_update_cell:
             parts = reply.split("UPDATE_CELL:")
             clean_reply = parts[0].strip()
             try:
@@ -486,7 +510,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "UPDATE_ROW:" in reply:
+        elif has_update_row:
             parts = reply.split("UPDATE_ROW:")
             clean_reply = parts[0].strip()
             try:
@@ -505,7 +529,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 clean_reply = reply
             await update.message.reply_text(clean_reply)
 
-        elif "FORMAT_SHEET:" in reply:
+        elif has_format_sheet:
             parts = reply.split("FORMAT_SHEET:")
             clean_reply = parts[0].strip()
             try:
