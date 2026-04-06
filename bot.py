@@ -57,7 +57,7 @@ CALENDAR:{"title":"название","date":"2026-04-10T15:00:00+05:00","descrip
 
 ПОЧТА ОТПРАВКА:
 Когда просят отправить письмо — в конце ответа добавь:
-EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма в одну строку без переносов"}
+EMAIL:{"to":"адрес@gmail.com","subject":"тема","body":"текст письма. Используй \\n для переносов строк между абзацами."}
 
 ПОЧТА ЧТЕНИЕ:
 Когда просят показать письма — в конце ответа добавь:
@@ -65,56 +65,13 @@ READ_EMAIL:{"max_results":5,"query":"поисковый запрос если н
 
 ОТВЕТ НА ПИСЬМО:
 Когда нужно ответить на письмо — добавь в конце:
-REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа в одну строку"}
+REPLY_EMAIL:{"message_id":"ID_письма","body":"текст ответа"}
 
 Отвечай по-русски, тепло и профессионально."""
     if skills.get("extra"):
         base += f"\n\nДОПОЛНИТЕЛЬНЫЕ УМЕЛКИ:\n{skills['extra']}"
     return base
 
-async def create_calendar_event(data):
-    if not MAKE_WEBHOOK:
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(MAKE_WEBHOOK, json=data, timeout=15)
-            logging.info(f"Make response: {r.status_code} {r.text}")
-    except Exception as e:
-        logging.error(f"Calendar error: {e}")
-
-async def send_email(data):
-    to = data.get("to", "")
-    subject = data.get("subject", "")
-    body = data.get("body", "")
-    
-    # Пробуем через Gmail API напрямую
-    service = get_gmail_service()
-    if service:
-        try:
-            import base64
-            from email.mime.text import MIMEText
-           html_body = body.replace('\n', '<br>')
-msg = MIMEText(f"<html><body>{html_body}</body></html>", 'html')
-            msg["to"] = to
-            msg["subject"] = subject
-            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            service.users().messages().send(
-                userId="me", body={"raw": raw}
-            ).execute()
-            logging.info(f"Email sent directly via Gmail API to {to}")
-            return
-        except Exception as e:
-            logging.error(f"Direct Gmail error: {e}")
-    
-    # Фолбэк через Make
-    if not MAKE_GMAIL_WEBHOOK:
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(MAKE_GMAIL_WEBHOOK, json=data, timeout=15)
-            logging.info(f"Gmail response: {r.status_code} {r.text}")
-    except Exception as e:
-        logging.error(f"Gmail error: {e}")
 def get_gmail_service():
     import pickle
     from google.auth.transport.requests import Request
@@ -131,6 +88,48 @@ def get_gmail_service():
     except Exception as e:
         logging.error(f"Gmail service error: {e}")
         return None
+
+async def create_calendar_event(data):
+    if not MAKE_WEBHOOK:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(MAKE_WEBHOOK, json=data, timeout=15)
+            logging.info(f"Make response: {r.status_code} {r.text}")
+    except Exception as e:
+        logging.error(f"Calendar error: {e}")
+
+async def send_email(data):
+    to = data.get("to", "")
+    subject = data.get("subject", "")
+    body = data.get("body", "")
+    service = get_gmail_service()
+    if service:
+        try:
+            import base64
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            msg = MIMEMultipart('alternative')
+            msg["to"] = to
+            msg["subject"] = subject
+            html_body = body.replace('\\n', '<br>').replace('\n', '<br>')
+            html = f"<html><body><p>{html_body}</p></body></html>"
+            msg.attach(MIMEText(body, 'plain'))
+            msg.attach(MIMEText(html, 'html'))
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            service.users().messages().send(userId="me", body={"raw": raw}).execute()
+            logging.info(f"Email sent via Gmail API to {to}")
+            return
+        except Exception as e:
+            logging.error(f"Direct Gmail error: {e}")
+    if not MAKE_GMAIL_WEBHOOK:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(MAKE_GMAIL_WEBHOOK, json=data, timeout=15)
+            logging.info(f"Gmail Make response: {r.status_code}")
+    except Exception as e:
+        logging.error(f"Gmail Make error: {e}")
 
 def read_emails(max_results=5, query=""):
     service = get_gmail_service()
