@@ -520,7 +520,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(clean_reply)
 
         else:
-            await update.message.reply_text(reply)
+            # Разбиваем длинные сообщения
+if len(reply) > 4000:
+    for i in range(0, len(reply), 4000):
+        await update.message.reply_text(reply[i:i+4000])
+else:
+    await update.message.reply_text(reply)
 
     except Exception as e:
         logging.error(f"Ошибка: {e}")
