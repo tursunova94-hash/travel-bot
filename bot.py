@@ -33,6 +33,12 @@ def parse_json_from_reply(text):
         pass
     return {}
 
+async def send_long(update, text):
+    if not text:
+        return
+    for i in range(0, len(text), 4000):
+        await update.message.reply_text(text[i:i+4000])
+
 def get_system_prompt():
     skills = load_skills()
     base = """Ты — Амелия, личный ИИ-ассистент владелицы турагентства премиум класса.
@@ -268,7 +274,7 @@ def update_cell(sheet_url: str, row: int, col: int, value: str):
         sh = gc.open_by_url(sheet_url)
         ws = sh.get_worksheet(0)
         ws.update_cell(row, col, value)
-        return f"Ячейка обновлена!"
+        return "Ячейка обновлена!"
     except Exception as e:
         logging.error(f"Update cell error: {e}")
         return f"Ошибка: {e}"
@@ -376,7 +382,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Calendar parse error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "READ_EMAIL:" in reply:
             parts = reply.split("READ_EMAIL:")
@@ -390,7 +396,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Read email parse error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "REPLY_EMAIL:" in reply:
             parts = reply.split("REPLY_EMAIL:")
@@ -404,7 +410,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Reply email parse error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "EMAIL:" in reply:
             email_blocks = re.findall(r'EMAIL:\{[^}]*\}', reply, re.DOTALL)
@@ -420,7 +426,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logging.error(f"Email send error: {e}")
             if sent > 0:
                 clean_reply += f"\n\n✅ Отправлено писем: {sent}"
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "CREATE_SHEET:" in reply:
             parts = reply.split("CREATE_SHEET:")
@@ -434,7 +440,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Create sheet error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "ADD_ROW:" in reply:
             row_blocks = re.findall(r'ADD_ROW:\{[^}]*\}', reply, re.DOTALL)
@@ -451,7 +457,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logging.error(f"Add row error: {e}")
             clean_reply += f"\n\n✅ Добавлено строк: {added}"
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "READ_SHEET:" in reply:
             parts = reply.split("READ_SHEET:")
@@ -465,7 +471,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Read sheet error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "UPDATE_CELL:" in reply:
             parts = reply.split("UPDATE_CELL:")
@@ -484,7 +490,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Update cell error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "UPDATE_ROW:" in reply:
             parts = reply.split("UPDATE_ROW:")
@@ -503,7 +509,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Update row error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         elif "FORMAT_SHEET:" in reply:
             parts = reply.split("FORMAT_SHEET:")
@@ -517,15 +523,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Format sheet error: {e}")
                 clean_reply = reply
-            await update.message.reply_text(clean_reply)
+            await send_long(update, clean_reply)
 
         else:
-            # Разбиваем длинные сообщения
-if len(reply) > 4000:
-    for i in range(0, len(reply), 4000):
-        await update.message.reply_text(reply[i:i+4000])
-else:
-    await update.message.reply_text(reply)
+            await send_long(update, reply)
 
     except Exception as e:
         logging.error(f"Ошибка: {e}")
